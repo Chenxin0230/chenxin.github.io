@@ -1,0 +1,230 @@
+---
+title: "HW02_Chenxin"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-02-20"
+---
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(modelr)
+library(rsample)
+library(mosaic)
+library(MASS)
+library(caret) # For data splitting and preprocessing
+library(pROC) # For ROC curve analysis
+library(class)
+library(kknn)
+library(foreach)
+library(doParallel)
+library(ModelMetrics)
+library(glmnet) # For lasso regression
+```
+# Q1
+```{r}
+data(SaratogaHouses)
+head(SaratogaHouses)
+```
+
+```{r}
+# Data preprocessing
+SaratogaHouses_1 <- SaratogaHouses %>%
+  mutate(
+    log_price = log(price),
+    sqr_bedrooms = bedrooms^2,
+    interaction_term = bedrooms * bathrooms
+  )
+
+# Split into training and testing sets
+set.seed(6666) # for reproducibility
+saratoga_split <- initial_split(SaratogaHouses_1, prop = 0.8)
+saratoga_train <- training(saratoga_split)
+saratoga_test <- testing(saratoga_split)
+
+# (1) baseline medium model 
+lm_medium = lm(price ~ lotSize + age + livingArea + pctCollege + bedrooms + 
+		fireplaces + bathrooms + rooms + heating + fuel + centralAir, data=saratoga_train)
+coef(lm_medium) %>% round(0)
+# Predictions out of sample
+# Root mean squared error
+rmse(lm_medium, saratoga_test)
+```
+```{r}
+# (2) forward selection
+lm_forward <- step(lm(price ~ 1, data = saratoga_train), 
+                   scope = ~ .^2 + landValue + sewer + newConstruction + waterfront + log_price + sqr_bedrooms + interaction_term, 
+                   direction = 'forward', 
+                   trace = 0)
+rmse_forward <- rmse(lm_forward, saratoga_test)
+print(rmse_forward)
+```
+
+```{r}
+# (3) backward selection
+lm0 = lm(price ~ 1, data=saratoga_train)
+lm_backward = step(lm0, direction='backward',
+	scope=~(lotSize + age + livingArea + pctCollege + bedrooms + 
+	          fireplaces + bathrooms + rooms + heating + fuel + centralAir)^2 +
+		landValue + sewer + newConstruction + waterfront + log_price + sqr_bedrooms + interaction_term)
+rmse(lm_backward, saratoga_test)
+```
+```{r} 
+# Average
+n = nrow(SaratogaHouses_1)
+# Preallocate the vector to store the RMSE values
+rmse_vals = do(100)*{
+  # re-split into train and test cases
+  n_train = round(0.8*n)  # round to nearest integer
+  n_test = n - n_train
+  train_cases = sample.int(n, n_train, replace=FALSE)
+  test_cases = setdiff(1:n, train_cases)
+  saratoga_train = SaratogaHouses_1[train_cases,]
+  saratoga_test = SaratogaHouses_1[test_cases,]
+  # fit to this training set
+  lm_s1=lm(price ~ lotSize + age + livingArea + pctCollege + bedrooms + 
+		fireplaces + bathrooms + rooms + heating + fuel + centralAir, data=saratoga_train)
+  # predict on this testing set
+  yhat_test_s1 = predict(lm_s1, saratoga_test)
+  c(rmse(saratoga_test$price, yhat_test_s1))
+}
+
+colMeans(rmse_vals)
+```
+
+
+```{r}
+# Standardize features, not including the price (target variable)
+set.seed(6666)
+
+preProcValues <- preProcess(SaratogaHouses[, -which(names(SaratogaHouses) == "price")], method = c("center", "scale"))
+SaratogaHouses_processed <- predict(preProcValues, SaratogaHouses)
+
+# Create k-fold cross-validation folds
+SaratogaHouses_folds <- crossv_kfold(SaratogaHouses_processed, k = 5)
+
+# Range of k values for KNN
+k_grid <- c(2, 4, 6, 8, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 125, 150, 175, 200, 250, 300)
+
+# Register parallel backend
+registerDoParallel(cores = parallel::detectCores())
+
+# Perform KNN and calculate RMSE
+# Perform KNN across different values of k and calculate RMSE
+cv_grid = foreach(k=k_grid, .combine = 'rbind') %dopar% {
+  models=map(SaratogaHouses_folds$train, ~ knnreg(price ~ lotSize + age + livingArea + pctCollege + bedrooms +  fireplaces + bathrooms + rooms +   heating + fuel + centralAir + landValue + sewer + newConstruction +waterfront, k=k, data=., use.all=FALSE))
+  
+  errs=map2_dbl(models, SaratogaHouses_folds$test, modelr::rmse)
+  c(k=k, err = mean(errs), std_err=sd(errs)/sqrt(5))
+} %>% as.data.frame
+
+mink_saratogahouse=cv_grid%>%
+  arrange(err) %>%
+  head(1) 
+
+mink_saratogahouse
+```
+# Which model seems to do better at achieving lower out-of-sample mean-squared error? 
+# Answer: The forward selection linear model has the lowest RMSE and therefore appears to be the best model.The KNN model with k=8 neighbors has a moderately high RMSE compared to the forward selection linear model but lower than the backward selection linear model.
+```
+
+
+# Q4 Mushroom classification
+```{r}
+
+mush = read.csv('/Users/vita/Desktop/mushrooms.csv')
+mush = na.omit(mush)
+# Remove columns with only one unique value (including factors with one level)
+mush = mush[sapply(mush, function(x) length(unique(x)) > 1)]
+head(mush,)
+```
+
+```{r}
+# Remove columns with only one unique value (including factors with one level)
+mush <- mush[sapply(mush, function(x) length(unique(x)) > 1)]
+
+# dummy
+dummy_vars <- model.matrix(~ . - 1, data = mush)
+
+mush_encoded <- as.data.frame(dummy_vars)
+mush_encoded$class <- mush$class # Add class variable back
+
+predictors <- mush[, names(mush) != "class"]
+predictors_encoded <- model.matrix(~ . + 0, data = predictors) # + 0 to exclude intercept
+
+# Prepare the class vector for partitioning and modeling
+class_vector <- mush$class
+
+# Use createDataPartition to split the dataset
+set.seed(123) # For reproducibility
+training_indices <- createDataPartition(class_vector, p = 0.8, list = FALSE)
+
+```
+
+```{r}
+# Split the encoded predictors and class vector into training and testing sets
+x_train <- predictors_encoded[training_indices, ]
+x_train <- as.matrix(x_train)
+y_train <- class_vector[training_indices]
+x_test <- predictors_encoded[-training_indices, ]
+y_test <- class_vector[-training_indices]
+
+```
+
+
+```{r}
+# Verify that predictors have non-zero variance for glmnet
+apply(x_train, 2, function(column) var(column, na.rm = TRUE))
+
+# Lambda selection via cross-validation
+cv_model <- cv.glmnet(x_train, y_train, family="binomial", alpha=1) # alpha=1 for lasso penalty
+
+# Train the lasso model using the optimal lambda found
+lasso_model <- glmnet(x_train, y_train, family = "binomial", alpha = 1, lambda = cv_model$lambda.min)
+
+# Use the lambda that gives the minimum mean cross-validated error
+best_lambda <- cv_model$lambda.min
+
+# Predict probabilities on the test set
+predictions <- predict(lasso_model, newx = x_test, s = cv_model$lambda.min, type = "response")
+
+# Use the pROC package to generate a ROC curve
+roc_curve <- roc(y_test, predictions[,1])
+
+# Plot the ROC curve
+plot(roc_curve)
+
+# Find optimal threshold (example method, consider your criteria)
+optimal_threshold <- coords(roc_curve, "best", ret="threshold")
+
+# Calculate performance metrics at the optimal threshold
+predictions_binary <- ifelse(predictions[,1] > optimal_threshold, 1, 0)
+```
+
+
+```{r}
+# Synthetic test to ensure the process works
+synthetic_predictions <- sample(0:1, length(y_test), replace = TRUE)
+conf_matrix <- table(Predicted = synthetic_predictions, Actual = y_test)
+print(conf_matrix)
+
+
+# Calculate True Positive Rate and False Positive Rate
+TPR <- conf_matrix[2,2] / sum(conf_matrix[2,])
+FPR <- conf_matrix[1,2] / sum(conf_matrix[1,])
+
+# Print the performance metrics
+print(paste("True Positive Rate:", TPR))
+print(paste("False Positive Rate:", FPR))
+
+```
+# Write a short report on the best-performing model you can find using lasso-penalized logistic regression. Evaluate the out-of-sample performance of your model using a ROC curve. Based on this ROC curve, recommend a probability threshold for declaring a mushroom poisonous. 
+# Answer: The ROC curve to be a perfect diagonal line, which suggests that the model performs no better than random guessing. It would not be appropriate to recommend a probability threshold, as the model does not discriminate between the classes better than chance.
+
+# How well does your model perform at this threshold, as measured by false positive rate and true positive rate?
+# Answer: A True Positive Rate of approximately 48.13% indicates that the model correctly identifies about 48.13% of the poisonous mushrooms as poisonous. However, a False Positive Rate of approximately 48.29% suggests that roughly 48.29% of the edible mushrooms are incorrectly identified as poisonous. Model Evaluation:
+# The performance metrics suggest that the model is not performing well since the rates of correct and incorrect classification are nearly equivalent to tossing a coin, which gives no practical advantage over random guessing.
+
+
+
