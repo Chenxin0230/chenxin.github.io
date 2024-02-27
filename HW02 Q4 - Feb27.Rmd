@@ -1,0 +1,127 @@
+---
+title: "HW02_Chenxin"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-02-20"
+---
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(modelr)
+library(rsample)
+library(mosaic)
+library(pROC) # For ROC curve analysis
+library(class)
+library(kknn)
+library(foreach)
+library(doParallel)
+library(ModelMetrics)
+library(gamlr) # for lasso-penalized logistic regression
+library(caret) # For data splitting and preprocessing
+```
+
+
+# Q4 Mushroom classification
+```{r}
+# data processing
+mush = read.csv('/Users/vita/Desktop/mushrooms.csv')
+mush = na.omit(mush)
+# Remove columns with only one unique value (including factors with one level)
+mush = mush[sapply(mush, function(x) length(unique(x)) > 1)]
+# Convert all categorical variables to factors
+mush[] <- lapply(mush, factor)
+head(mush,)
+```
+
+```{r}
+# Convert factors to dummy variables
+# caret's dummyVars function can be used for one-hot encoding
+dummies <- dummyVars(" ~ .", data = mush)
+mushrooms_transformed <- predict(dummies, newdata = mush)
+
+# Convert to data frame
+mushrooms_df <- data.frame(mushrooms_transformed)
+# Separate features and target variable
+y <- mushrooms_df[, "class.e"] # based on target variable
+X <- mushrooms_df[, -1] # Exclude the target variable, selects all columns except the first one
+
+# Check dimensions
+dim(X)
+length(y)
+```
+
+```{r}
+# (1)  Model Training : Lasso-penalized logistic regression 
+# Use lambda to train the final lasso-penalized logistic regression model on the entire training set
+# (1)  Splitting data into training (80%) and test (20%) sets
+trainIndex <- createDataPartition(y, p = .8, list = FALSE)
+X_train <- X[trainIndex, ]
+y_train <- y[trainIndex]
+X_test <- X[-trainIndex, ]
+y_test <- y[-trainIndex]
+
+model <- cv.gamlr(X_train, y_train, family="binomial")
+model
+```
+
+```{r}
+# Plot to visualize lambda selection (optional step for visualization)
+plot(model)
+best_lambda <- model$lambda.min # Extract the best lambda
+best_lambda
+```
+
+```{r}
+# (1) Fit the lasso-penalized logistic regression model with the best lambda on training data
+lasso_model <- gamlr(X_train, y_train, family = "binomial", gamma = best_lambda)
+
+# (2) Make predictions on the test set
+predictions <- predict(lasso_model, X_test, type = "response")
+
+# (3) Evaluate the Model with ROC Curve
+# Generating ROC curve and calculating AUC
+roc_result <- roc(y_test, predictions)
+plot(roc_result, main = "ROC Curve")
+
+# Finding optimal threshold
+optimal_threshold = coords(roc_result, "best", ret = "threshold")
+optimal_threshold
+```
+
+````{r}
+# (4) Calculate FPR and TPR at the Optimal Threshold
+# Now apply the thresholding logic
+optimal_threshold <- matrix(as.numeric(optimal_threshold), nrow = nrow(predictions), ncol = ncol(predictions), byrow = TRUE)
+
+predictions_binary <- ifelse(predictions > optimal_threshold, 1, 0)
+```
+
+
+```{r}
+# Create a confusion matrix
+conf_matrix <- table(Predicted = predictions_binary, Actual = y_test)
+
+conf_matrix
+
+# Calculate TPR and FPR from the confusion matrix
+# True Positive Rate (Sensitivity)
+false_positive_rate <- conf_matrix[2, 1] / sum(conf_matrix[2, ])
+true_positive_rate <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+print(paste("False Positive Rate:", false_positive_rate))
+print(paste("True Positive Rate:", true_positive_rate))
+
+```
+
+
+# Write a short report on the best-performing model you can find using lasso-penalized logistic regression. Evaluate the out-of-sample performance of your model using a ROC curve. Based on this ROC curve, recommend a probability threshold for declaring a mushroom poisonous. 
+
+# Answer: The ROC curve to be a perfect diagonal line. This perfect AUC score suggests that the model is highly capable of distinguishing between poisonous and edible mushrooms, with minimal error. The probability threshold is suggested to be 0.5001403
+
+# How well does your model perform at this threshold, as measured by false positive rate and true positive rate?
+# Based on this confusion matrix, the FPR is 0 (as there are 0 false positives) and the TPR is 1 (as there are no false negatives). These values indicate that the model is achieving perfect classification performance. It is exceptionally effective at identifying poisonous mushrooms without mistakenly classifying edible ones as poisonous, but perfect performance can also sometimes indicate overfitting.
+
+
+
+
