@@ -1,0 +1,156 @@
+---
+title: "HW04"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-03-25"
+---
+
+```{r}
+library(ggmap)
+library(osmdata)
+library(dplyr)
+library(tidyverse)
+library(tidyr)
+library(rsample) 
+library(caret)
+library(rpart)
+library(randomForest)
+library(gbm)
+library(ggplot2)
+```
+
+```{r}
+# Q3
+# Data preprocessing
+green = read_csv('/Users/vita/Desktop/greenbuildings.csv', show_col_types = FALSE)
+green$revenue = green$Rent *green$leasing_rate
+
+green_split = initial_split(green, prop=0.8)
+green_train = training(green_split)
+green_test  = testing(green_split)
+
+# LEED and EnergyStar collapse them into a single "green certified" category
+green_train = green_train %>%
+  mutate(green_certified = ifelse(LEED == 1 | Energystar == 1, 1, 0))
+
+green_test = green_test %>%
+  mutate(green_certified = ifelse(LEED == 1 | Energystar == 1, 1, 0))
+
+```
+
+```{r}
+# Model training 
+# use all available variables in green_train as predictors except for Rent and leasing_rate
+# a.cart model
+cart_model <- rpart(revenue ~ . - Rent - leasing_rate, data = green_train, method = "anova")
+
+# b.Gradient Boosting Model
+gbm_model <- gbm(revenue ~ . - Rent - leasing_rate, data = green_train, distribution = "gaussian", n.trees = 500, interaction.depth = 4)
+
+# c.Linear Model
+lm_model <- lm(revenue ~ . - Rent - leasing_rate, data = green_train)
+
+```
+
+```{r}
+# Model evaluation 
+predictions_cart <- predict(cart_model, newdata = green_test)
+predictions_gbm <- predict(gbm_model, newdata = green_test, n.trees = 500)
+predictions_lm <- predict(lm_model, newdata = green_test)
+
+# Calculate RMSE for each model
+rmse_cart <- sqrt(mean((green_test$revenue - predictions_cart)^2))
+rmse_gbm <- sqrt(mean((green_test$revenue - predictions_gbm)^2))
+rmse_lm <- sqrt(mean((predictions_lm - green_test$revenue)^2, na.rm = TRUE))
+
+print(paste("CART RMSE:", rmse_cart))
+print(paste("Gradient Boosting RMSE:", rmse_gbm))
+print(paste("LM RMSE:", rmse_lm))
+
+```
+
+```{r}
+# Answer: 
+# The initial step involved cleaning the dataset to handle missing values and create new features. Notably, the green_certified variable was engineered to indicate whether a property is green-certified (LEED or EnergyStar). 
+# The analysis employed three distinct modeling approaches:CART: Served as a foundational model to establish baseline performance metrics. GBM: An advanced ensemble learning technique selected for its ability to iteratively correct errors and handle complex interactions. Linear Model (LM): A conventional approach providing a benchmark for performance comparison.
+# Result: The models were evaluated based on their Root Mean Squared Error (RMSE): Gradient Boosting has a lower RMSE, which is a better model.
+
+
+```
+
+```{r}
+## Q4: Predictive model building: California housing
+# get API key
+register_stadiamaps(key = "ff75cbd1-a355-4aba-9135-e12bd22345f9")
+CAmap = get_stadiamap( getbb('california'), source="stadia", zoom = 7)
+```
+
+```{r}
+# (1) Original data plot
+housing_data = read.csv('/Users/vita/Desktop/CAhousing.csv')
+
+# plot
+ggmap(CAmap) + 
+  geom_point(aes(x = longitude, y = latitude, color = medianHouseValue), 
+             data = housing_data) +
+  labs(x = 'Longitude', y = 'Latitude', title = 'California Housing Values', subtitle = '') 
+```
+
+```{r}
+# data preprocessing
+housing_data$bedroomsPerHousehold = housing_data$totalBedrooms /housing_data$households
+housing_data$roomsPerHousehold = housing_data$totalRooms / housing_data$households
+ca_split = initial_split(housing_data, 0.8)
+ca_train = training(ca_split)
+ca_test = testing(ca_split)
+```
+
+
+
+```{r}
+# (2) Model's predictions
+# Model training 
+# a.cart mode
+cart_model = rpart(medianHouseValue ~ ., data = ca_train, method = "anova")
+# b.Random Forest Model
+rf_model = randomForest(medianHouseValue ~ ., data = ca_train, ntree = 500)
+# c.Gradient Boosting Model
+gbm_model= gbm(medianHouseValue ~ ., data = ca_train, distribution = "gaussian", n.trees = 500, interaction.depth = 4)
+
+```
+
+```{r}
+# Model evaluation
+# Predictions
+predictions_cart = predict(cart_model, newdata = ca_test)
+predictions_rf = predict(rf_model, newdata = ca_test)
+predictions_gbm = predict(gbm_model, newdata = ca_test, n.trees = 500)
+
+# Calculate RMSE
+rmse_cart = sqrt(mean((ca_test$medianHouseValue - predictions_cart)^2))
+rmse_rf = sqrt(mean((ca_test$medianHouseValue - predictions_rf)^2))
+rmse_gbm = sqrt(mean((ca_test$medianHouseValue - predictions_gbm)^2))
+
+# Print RMSE values
+print(paste("CART RMSE:", rmse_cart))
+print(paste("Random Forest RMSE:", rmse_rf))
+print(paste("Gradient Boosting RMSE:", rmse_gbm))
+
+```
+
+```{r}
+### Answer:The best performance based on RMS is Gradient Boosting
+# plot with prediction
+# Add Predictions to Dataset
+housing_data$predict_medianHouseValue = predictions_gbm
+ggmap(CAmap) + 
+  geom_point(aes(x = longitude, y = latitude, color = predict_medianHouseValue), 
+             data = housing_data) +
+  labs(x = 'Longitude', y = 'Latitude', title = "Predicted Median House Value", subtitle = '') 
+```
+```{r}
+# Report: At data preprocessing stage (1) Standardization: Given that total rooms and bedrooms are aggregate counts, we normalized these by the number of households in each tract to derive more meaningful features, roomsPerHousehold and bedroomsPerHousehold.Then, three machine learning algorithms were considered: CART (Classification and Regression Trees), Random Forest, and Gradient Boosting Machines (GBM). Each model was trained using the processed features to predict the median house value.
+# Result: The GBM model emerged as the most effective, demonstrating superior predictive accuracy.
+
+```
