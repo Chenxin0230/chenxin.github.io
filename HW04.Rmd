@@ -1,0 +1,190 @@
+---
+title: "HW04_Chenxin"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-04-08"
+---
+
+```{r}
+library(tidyverse)
+library(igraph)
+library(arules)  # has a big ecosystem of packages built around it
+library(arulesViz)
+# Q3 Association rules for grocery purchases
+# (1) Load and Process the Data:
+groceries = read.transactions('/Users/vita/Desktop/HW04/groceries.txt')
+
+groceries_list = readLines('/Users/vita/Desktop/HW04/groceries.txt')
+groceries_list = strsplit(groceries_list, ",")
+
+# Remove duplicates ("de-dupe")
+groceries_list_unique = lapply(groceries_list, unique)
+
+# (2) Convert list to transactions
+groceries_transactions <- as(groceries_list_unique, "transactions")
+
+# Convert the cleaned list to transactions
+# Cast this variable as a special arules "transactions" class.
+
+```
+
+
+```{r}
+# (3) Apply the Apriori Algorithm
+rules = apriori(groceries_transactions,
+                 parameter = list(support = 0.005, confidence = 0.1, minlen = 4))
+# Look at rules with support > .005 & confidence >.1 & length (#) <= 4
+
+# Thresholds for lift and confidence: A support threshold of 0.005 means we're interested in itemsets that appear in at least 0.5% of all transactions. This value is chosen to ensure that the rules are not based on very rare item combinations, which might be of less practical significance. It's low enough to capture infrequent but potentially interesting associations, yet high enough to ignore rules that could occur simply by chance due to very low occurrence.
+
+# A confidence threshold of 0.2 is chosen to ensure that at least 20% of the time, the items on the left-hand side of the rule are accompanied by the items on the right-hand side. This is a relatively low threshold for confidence, allowing for the discovery of rules that might not be very strong but could still provide interesting insights. Higher confidence levels could be used to focus on more reliable rules but might miss out on less obvious patterns.
+
+# Setting minlen to 2 ensures that the rules consist of at least two items. This is the smallest possible rule and ensures that you are looking at associations between items, not just the frequency of single items.
+
+```
+
+```{r}
+# Analyze and Visualize the Results
+# Basic plot of rules
+plot(rules)
+
+plot(rules, method = "graph", control = list(type = "items"))
+
+# For more detailed exploration, inspect rules
+inspect(head(sort(rules, by = "lift"), 10))
+
+```
+
+```{r}
+# Support and Confidence Levels:
+# Graph 01: The scatter plot indicates that most rules have a support between 0.005 and 0.0075. This is consistent with the minimum support level defined, meaning we've captured the itemsets that appear in at least 0.5% of the transactions.
+# Graph 02: The graph visualization clusters items like 'whole milk', 'yogurt', 'other vegetables', 'rolls/buns', and 'tropical fruit' with high lift values, suggesting that these combinations are more common than expected. This finding is logical as items such as 'whole milk' and 'bread' are staples in many households, and 'yogurt' often pairs with 'fruit' as a common breakfast or snack choice.The presence of 'whole milk' in several rules could signify it as a potential 'connector' item, which is frequently bought with various other items.
+```
+
+
+```{r}
+library(tidyverse)
+library(cluster)
+# Q2
+# Step 1: Data Preprocessing: 
+# 1.1 remove records flagged as "spam", "adult", or "uncategorized"
+data = read.csv('/Users/vita/Desktop/HW04/social_marketing.csv')
+cleaned_data = data %>% 
+  filter(spam == 0, adult == 0, uncategorized == 0)
+# Now, directly drop the columns by subsetting
+cleaned_data <- cleaned_data[, !(names(cleaned_data) %in% c("spam", "adult", "uncategorized", "Unnamed: 0"))]
+
+# 1.2 scale the data
+numeric_columns = sapply(cleaned_data, is.numeric)
+numeric_data = cleaned_data[, numeric_columns]
+
+# Apply the normalization (z-score normalization)
+scaled_data = as.data.frame(lapply(numeric_data, function(x) {
+  (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+}))
+
+# Check the structure of the scaled data
+str(scaled_data)
+```
+
+```{r}
+# Step 2: Clustering - Perform a clustering analysis to identify distinct market segments, with K-means 
+# Determine the optimal number of clusters (k) using the Elbow method
+wss <- sapply(1:15, function(k) {
+  kmeans(scaled_data, centers = k, nstart = 25)$tot.withinss
+})
+
+# Plot the Elbow method results to help determine the best k
+plot(1:15, wss, type = "b", xlab = "Number of Clusters", ylab = "Total Within-Cluster Sum of Square")
+# In this plot, the elbow seems to be not very pronounced, but we can observe a subtle change in the slope after k=3. 
+```
+
+
+```{r}
+# Choose k based on the plot
+k = 3 
+
+# Perform K-means clustering with the chosen number of clusters
+set.seed(123) # For reproducibility
+kmeans_result <- kmeans(scaled_data, centers = k, nstart = 25)
+
+# Examine the clustering result
+print(kmeans_result)
+
+```
+
+```{r}
+# Step 3: Attach the cluster labels to the original data
+cleaned_data$cluster = kmeans_result$cluster
+
+# Analyze the cluster centroids
+centroids = kmeans_result$centers
+print(centroids)
+
+# Profile and interpret clusters
+aggregate(cleaned_data[, -ncol(cleaned_data)], by=list(cluster=cleaned_data$cluster), mean)
+
+# Check the size of each cluster
+print(kmeans_result$size)
+
+# Before Visualize clusters : use PCA
+# Run PCA on the scaled data
+pca_result <- prcomp(numeric_data, scale = TRUE)
+
+# Add PCA scores for the first two principal components to your cleaned data
+cleaned_data$PC1 <- pca_result$x[, 1]
+cleaned_data$PC2 <- pca_result$x[, 2]
+
+# Now create a ggplot using the first two principal components
+ggplot(cleaned_data, aes(x=PC1, y=PC2, color=factor(cluster))) + 
+  geom_point(alpha = 0.6) +  # alpha for transparency to see overlapping points
+  scale_color_discrete(name="Cluster") +
+  labs(x="Principal Component 1", y="Principal Component 2") +
+  theme_minimal()
+```
+
+```{r}
+# Cluster Interpretation
+print(kmeans_result$centers) # Review the centroids for interpretability
+
+# Cluster Profiling (based on cluster means on original variables, not PCA)
+cluster_profiles <- aggregate(cleaned_data[, -ncol(cleaned_data)], 
+                              by=list(cluster=cleaned_data$cluster), mean)
+print(cluster_profiles)
+
+# Variable Importance (PCA Loadings)
+loadings <- as.data.frame(pca_result$rotation)
+print(head(loadings[order(abs(loadings$PC1), decreasing = TRUE), ]))
+print(head(loadings[order(abs(loadings$PC2), decreasing = TRUE), ]))
+
+```
+```{r}
+# Step 4: Labeling Clusters - Market Segmentation
+# Cluster 1 (High on PC1, Low on PC2): This cluster might be characterized by users with strong community and family values who are less engaged in activities like sharing photos, cooking, or personal fitness. We could label this cluster "Community & Family-Focused" 
+
+# Cluster 2 (High on PC1, High on PC2): These users might interested in health and lifestyle as suggested by the positive loadings of "religion" and "sports_fandom" on PC2. This cluster could be labeled "Health & Community Minded".
+
+# Cluster 3 (Low on PC1, High on PC2): These users focused on photo sharing and fitness, perhaps "Active Lifestyle Enthusiasts"
+
+cluster_labels <- c("Community-Focused", "Health & Community Minded", "Active Lifestyle Enthusiasts")
+
+factor(kmeans_result$cluster, labels = cluster_labels)
+
+cluster_labels <- c("Community & Family-Focused", "Health Conscious", "")
+names(cluster_labels) <- levels(factor(cleaned_data$cluster))
+cleaned_data$cluster_label <- cluster_labels[cleaned_data$cluster]
+
+# Review the assigned labels and profiles
+print(cleaned_data$cluster_label)
+
+```
+```{r}
+# How they might position their brand to maximally appeal to each market segment: 
+# Customer segmentation advice:
+#（1） Community-Focused Cluster: This segment values community and traditional activities. "NutrientH20" could position their brand as a traditional, family-friendly product. Marketing campaigns could feature family gatherings, communal events, and emphasize the brand’s role in nurturing these relationships. Sponsorships or partnerships with community organizations, faith-based groups, and local sports teams could also resonate well with this segment.
+
+# (2) Health-Conscious Cluster: These individuals appear to value both their health and their community. "NutrientH20" might focus on highlighting the health benefits of their drinks, such as hydration, natural ingredients, or fitness recovery aspects. They could also show their brand as a supporter of community health initiatives, such as local sports events, wellness programs, or outdoor activities that promote a healthy lifestyle combined with community engagement.
+
+# (3) Active Lifestyle Enthusiasts Cluster: This group is engaged in modern lifestyle activities such as fitness and sharing their experiences online. "NutrientH20" can showcase their product within the context of an active lifestyle, focusing on the convenience, design, and how the product fits into an on-the-go, wellness-oriented life. Collaborating with fitness influencers, participating in fitness challenges, and creating visually appealing content for social media that encourages sharing could appeal to this segment.
+```
